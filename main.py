@@ -44,6 +44,12 @@ class Pipeline(abc.ABC):
         self.model = model_cls()
         self.checkpoint_path = checkpoint_path
 
+    def _read_nifti(self, path, dtype=np.float32):
+        image_nib = nib.load(path)
+        return (
+            image_nib.get_fdata().astype(dtype),
+            image_nib.affine)
+
     def _normalize_image(self, image, q=99):
         image_max = tf.contrib.distributions.percentile(
             image, q=q, axis=[0, 1, 2], keep_dims=True)
@@ -135,7 +141,6 @@ class LiverDetection(Pipeline):
         self.voxel_dims = voxel_dims
 
     @with_output('study_name', dtype=tf.string, shape=[])
-    @with_output('study_path', dtype=tf.string, shape=[])
     @with_output('image_raw', dtype=tf.float32, shape=[None, None, None, 4])
     @with_output('affine_raw', dtype=tf.float32, shape=[4, 4])
     def _input_generator(self, study_paths):
@@ -143,14 +148,10 @@ class LiverDetection(Pipeline):
             study_name = os.path.basename(study_path).split('.')[0]
 
             logging.info(f'Loading study <{study_name}> ({study_path})')
-
-            image_nib = nib.load(study_path)
-            image = image_nib.get_fdata().astype(np.float32)
-            affine = image_nib.affine
+            (image, affine) = self._read_nifti(study_path)
 
             yield {
                 'study_name': study_name,
-                'study_path': study_path,
                 'image_raw': image,
                 'affine_raw': affine}
 
@@ -201,29 +202,22 @@ class LesionDetection(Pipeline):
             checkpoint_path=checkpoint_path)
 
     @with_output('study_name', dtype=tf.string, shape=[])
-    @with_output('study_path', dtype=tf.string, shape=[])
     @with_output('image_raw', dtype=tf.float32, shape=[None, None, None, 4])
     @with_output('roi_raw', dtype=tf.int32, shape=[None, None, None])
     @with_output('affine_raw', dtype=tf.float32, shape=[4, 4])
     def _input_generator(self, study_paths):
         for study_path in study_paths:
             study_name = os.path.basename(study_path).split('.')[0]
+            roi_path = LiverDetection.output_path(study_name)
 
             logging.info(f'Loading study <{study_name}> ({study_path})')
+            (image, affine) = self._read_nifti(study_path)
 
-            image_nib = nib.load(study_path)
-            image = image_nib.get_fdata().astype(np.float32)
-            affine = image_nib.affine
-
-            roi_path = LiverDetection.output_path(study_name)
             logging.info(f'Loading roi <{study_name}> ({roi_path})')
-
-            roi_nib = nib.load(roi_path)
-            roi = roi_nib.get_fdata().astype(np.int32)
+            (roi, _) = self._read_nifti(roi_path, dtype=np.int32)
 
             yield {
                 'study_name': study_name,
-                'study_path': study_path,
                 'image_raw': image,
                 'roi_raw': roi,
                 'affine_raw': affine}
