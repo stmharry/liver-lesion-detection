@@ -5,13 +5,6 @@ import skimage.measure
 import tensorflow as tf
 
 
-def on_cpu(f):
-    def _f(*args, **kwargs):
-        with tf.device('CPU'):
-            return f(*args, **kwargs)
-    return _f
-
-
 def resample_to_output(image, affine, voxel_dims, order=3):
     def _vox2out_vox_numpy(shape, affine):
         _shape = shape[:-1]

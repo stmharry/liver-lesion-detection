@@ -12,12 +12,13 @@ from absl import flags
 from absl import logging
 
 from detection.models import ResUNet18
-from detection.ops import on_cpu
 from detection.ops import resample_to_output
 from detection.ops import resample_from_to
 from detection.ops import resize_to_output
 from detection.ops import resize_from_to
 from detection.ops import largest_connected
+from detection.utils import on_cpu
+from detection.utils import with_output
 
 flags.DEFINE_string(
     'test_dir', './images', 'Directory containing nifti files for testing.')
@@ -55,11 +56,11 @@ class Pipeline(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def _preprocess(self):
+    def _preprocess(self, example):
         pass
 
     @abc.abstractmethod
-    def _postprocess(self):
+    def _postprocess(self, example):
         pass
 
     def input_fn(self):
@@ -70,8 +71,7 @@ class Pipeline(abc.ABC):
 
         dataset = tf.data.Dataset.from_generator(
             functools.partial(
-                self._input_generator,
-                study_paths=study_paths),
+                self._input_generator, study_paths=study_paths),
             output_types=self._input_generator.output_types,
             output_shapes=self._input_generator.output_shapes)
         dataset = dataset.map(self._preprocess)
@@ -134,6 +134,10 @@ class LiverDetection(Pipeline):
 
         self.voxel_dims = voxel_dims
 
+    @with_output('study_name', dtype=tf.string, shape=[])
+    @with_output('study_path', dtype=tf.string, shape=[])
+    @with_output('image_raw', dtype=tf.float32, shape=[None, None, None, 4])
+    @with_output('affine_raw', dtype=tf.float32, shape=[4, 4])
     def _input_generator(self, study_paths):
         for study_path in study_paths:
             study_name = os.path.basename(study_path).split('.')[0]
@@ -150,18 +154,6 @@ class LiverDetection(Pipeline):
                 'image_raw': image,
                 'affine_raw': affine}
 
-    _input_generator.output_types = {
-        'study_name': tf.string,
-        'study_path': tf.string,
-        'image_raw': tf.float32,
-        'affine_raw': tf.float32}
-
-    _input_generator.output_shapes = {
-        'study_name': [],
-        'study_path': [],
-        'image_raw': [None, None, None, 4],
-        'affine_raw': [4, 4]}
-
     def _preprocess(self, example):
         image = self._normalize_image(example['image_raw'])
         (image, affine) = resample_to_output(
@@ -172,6 +164,9 @@ class LiverDetection(Pipeline):
         example.update({'image': image, 'affine': affine})
         return example
 
+    @with_output('_mask_logit', dtype=tf.float32)
+    @with_output('_mask_prob', dtype=tf.float32)
+    @with_output('_mask', dtype=tf.int32)
     def _postprocess(self, example):
         _mask_logit = resample_from_to(
             image=example['_mask_logit'],
@@ -189,11 +184,6 @@ class LiverDetection(Pipeline):
             '_mask_prob': _mask_prob,
             '_mask': _mask}
 
-    _postprocess.output_types = {
-        '_mask_logit': tf.float32,
-        '_mask_prob': tf.float32,
-        '_mask': tf.int32}
-
 
 class LesionDetection(Pipeline):
     @staticmethod
@@ -210,6 +200,11 @@ class LesionDetection(Pipeline):
             model_cls=model_cls,
             checkpoint_path=checkpoint_path)
 
+    @with_output('study_name', dtype=tf.string, shape=[])
+    @with_output('study_path', dtype=tf.string, shape=[])
+    @with_output('image_raw', dtype=tf.float32, shape=[None, None, None, 4])
+    @with_output('roi_raw', dtype=tf.int32, shape=[None, None, None])
+    @with_output('affine_raw', dtype=tf.float32, shape=[4, 4])
     def _input_generator(self, study_paths):
         for study_path in study_paths:
             study_name = os.path.basename(study_path).split('.')[0]
@@ -233,20 +228,6 @@ class LesionDetection(Pipeline):
                 'roi_raw': roi,
                 'affine_raw': affine}
 
-    _input_generator.output_types = {
-        'study_name': tf.string,
-        'study_path': tf.string,
-        'image_raw': tf.float32,
-        'roi_raw': tf.int32,
-        'affine_raw': tf.float32}
-
-    _input_generator.output_shapes = {
-        'study_name': [],
-        'study_path': [],
-        'image_raw': [None, None, None, 4],
-        'roi_raw': [None, None, None],
-        'affine_raw': [4, 4]}
-
     def _preprocess(self, example):
         image = resize_to_output(
             image=example['image_raw'], roi=example['roi_raw'])
@@ -255,6 +236,9 @@ class LesionDetection(Pipeline):
         example.update({'image': image})
         return example
 
+    @with_output('_mask_logit', dtype=tf.float32)
+    @with_output('_mask_prob', dtype=tf.float32)
+    @with_output('_mask', dtype=tf.int32)
     def _postprocess(self, example):
         _mask_logit = example['_mask_logit']
         _mask_prob = tf.nn.softmax(_mask_logit, axis=-1)
@@ -276,11 +260,6 @@ class LesionDetection(Pipeline):
             '_mask_logit': _mask_logit,
             '_mask_prob': _mask_prob,
             '_mask': _mask}
-
-    _postprocess.output_types = {
-        '_mask_logit': tf.float32,
-        '_mask_prob': tf.float32,
-        '_mask': tf.int32}
 
 
 def main(_):
