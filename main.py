@@ -88,7 +88,7 @@ class Pipeline(abc.ABC):
         return batch
 
     @on_cpu
-    def _predict_genertor(self):
+    def _predict_generator(self):
         logging.info(f'{self.__class__.__name__} making predictions...')
 
         checkpoint = tf.train.Checkpoint(model=self.model)
@@ -103,7 +103,7 @@ class Pipeline(abc.ABC):
                     for (key, value) in batch.items()}
 
     def predict(self):
-        predictions = self._predict_genertor()
+        predictions = self._predict_generator()
 
         df = pd.DataFrame(predictions)
         for (_, item) in df.iterrows():
