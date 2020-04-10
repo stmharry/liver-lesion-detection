@@ -16,7 +16,7 @@ The pipeline consists of two consecutive stages of the same 3D neural network. D
 ## Getting started
 1. Clone this repository.
     ```bash
-    git clone https://github.com/stmharry/liver-lesion-detector.git && cd liver-lesion-detector
+    git clone https://github.com/stmharry/liver-lesion-detection.git && cd liver-lesion-detection
     ```
 
 2. Download models and example images.

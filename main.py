@@ -33,6 +33,11 @@ class Label(enum.Enum):
 
 
 class Pipeline(abc.ABC):
+    @staticmethod
+    @abc.abstractmethod
+    def output_path(self, study_name):
+        pass
+
     def __init__(self, batch_size, model_cls, checkpoint_path):
         self.batch_size = batch_size
         self.model = model_cls()
@@ -46,7 +51,7 @@ class Pipeline(abc.ABC):
         return image
 
     @abc.abstractmethod
-    def _input_fn(self):
+    def _input_generator(self):
         pass
 
     @abc.abstractmethod
@@ -65,10 +70,10 @@ class Pipeline(abc.ABC):
 
         dataset = tf.data.Dataset.from_generator(
             functools.partial(
-                self._input_fn,
+                self._input_generator,
                 study_paths=study_paths),
-            output_types=self._input_fn.output_types,
-            output_shapes=self._input_fn.output_shapes)
+            output_types=self._input_generator.output_types,
+            output_shapes=self._input_generator.output_shapes)
         dataset = dataset.map(self._preprocess)
         dataset = dataset.batch(self.batch_size)
         return dataset
@@ -83,7 +88,7 @@ class Pipeline(abc.ABC):
         return batch
 
     @on_cpu
-    def predict(self):
+    def _predict_genertor(self):
         logging.info(f'{self.__class__.__name__} making predictions...')
 
         checkpoint = tf.train.Checkpoint(model=self.model)
@@ -97,21 +102,39 @@ class Pipeline(abc.ABC):
                     key: value[num].numpy()
                     for (key, value) in batch.items()}
 
+    def predict(self):
+        predictions = self._predict_genertor()
+
+        df = pd.DataFrame(predictions)
+        for (_, item) in df.iterrows():
+            study_name = item.study_name.decode()
+            mask_nib = nib.Nifti1Image(
+                item._mask.astype(np.uint8), affine=item.affine_raw)
+            mask_path = self.output_path(study_name)
+
+            logging.info(f'Saving study <{study_name}> ({mask_path})')
+            nib.save(mask_nib, mask_path)
+
 
 class LiverDetection(Pipeline):
     @staticmethod
     def output_path(study_name):
         return os.path.join(FLAGS.output_dir, f'{study_name}.liver.nii.gz')
 
-    def __init__(self, checkpoint_path='./checkpoints/ckpt-liver'):
+    def __init__(self,
+                 batch_size=1,
+                 model_cls=functools.partial(ResUNet18, num_classes=2),
+                 checkpoint_path='./checkpoints/ckpt-liver',
+                 voxel_dims=[4, 4, 4]):
+
         super(LiverDetection, self).__init__(
-            batch_size=1,
-            model_cls=functools.partial(ResUNet18, num_classes=2),
+            batch_size=batch_size,
+            model_cls=model_cls,
             checkpoint_path=checkpoint_path)
 
-        self.voxel_dims = [4, 4, 4]
+        self.voxel_dims = voxel_dims
 
-    def _input_fn(self, study_paths):
+    def _input_generator(self, study_paths):
         for study_path in study_paths:
             study_name = os.path.basename(study_path).split('.')[0]
 
@@ -127,13 +150,13 @@ class LiverDetection(Pipeline):
                 'image_raw': image,
                 'affine_raw': affine}
 
-    _input_fn.output_types = {
+    _input_generator.output_types = {
         'study_name': tf.string,
         'study_path': tf.string,
         'image_raw': tf.float32,
         'affine_raw': tf.float32}
 
-    _input_fn.output_shapes = {
+    _input_generator.output_shapes = {
         'study_name': [],
         'study_path': [],
         'image_raw': [None, None, None, 4],
@@ -171,32 +194,23 @@ class LiverDetection(Pipeline):
         '_mask_prob': tf.float32,
         '_mask': tf.int32}
 
-    def predict(self):
-        predictions = super(LiverDetection, self).predict()
-
-        df = pd.DataFrame(predictions)
-        for (_, item) in df.iterrows():
-            study_name = item.study_name.decode()
-            mask_nib = nib.Nifti1Image(
-                item._mask.astype(np.uint8), affine=item.affine_raw)
-            mask_path = self.output_path(study_name)
-
-            logging.info(f'Saving study <{study_name}> ({mask_path})')
-            nib.save(mask_nib, mask_path)
-
 
 class LesionDetection(Pipeline):
     @staticmethod
     def output_path(study_name):
         return os.path.join(FLAGS.output_dir, f'{study_name}.lesion.nii.gz')
 
-    def __init__(self, checkpoint_path='./checkpoints/ckpt-lesion'):
+    def __init__(self,
+                 batch_size=1,
+                 model_cls=functools.partial(ResUNet18, num_classes=3),
+                 checkpoint_path='./checkpoints/ckpt-lesion'):
+
         super(LesionDetection, self).__init__(
-            batch_size=1,
-            model_cls=functools.partial(ResUNet18, num_classes=3),
+            batch_size=batch_size,
+            model_cls=model_cls,
             checkpoint_path=checkpoint_path)
 
-    def _input_fn(self, study_paths):
+    def _input_generator(self, study_paths):
         for study_path in study_paths:
             study_name = os.path.basename(study_path).split('.')[0]
 
@@ -219,14 +233,14 @@ class LesionDetection(Pipeline):
                 'roi_raw': roi,
                 'affine_raw': affine}
 
-    _input_fn.output_types = {
+    _input_generator.output_types = {
         'study_name': tf.string,
         'study_path': tf.string,
         'image_raw': tf.float32,
         'roi_raw': tf.int32,
         'affine_raw': tf.float32}
 
-    _input_fn.output_shapes = {
+    _input_generator.output_shapes = {
         'study_name': [],
         'study_path': [],
         'image_raw': [None, None, None, 4],
@@ -235,8 +249,7 @@ class LesionDetection(Pipeline):
 
     def _preprocess(self, example):
         image = resize_to_output(
-            image=example['image_raw'],
-            roi=example['roi_raw'])
+            image=example['image_raw'], roi=example['roi_raw'])
         image = self._normalize_image(image)
 
         example.update({'image': image})
@@ -269,24 +282,10 @@ class LesionDetection(Pipeline):
         '_mask_prob': tf.float32,
         '_mask': tf.int32}
 
-    def predict(self):
-        predictions = super(LesionDetection, self).predict()
-
-        df = pd.DataFrame(predictions)
-        for (_, item) in df.iterrows():
-            study_name = item.study_name.decode()
-            mask_nib = nib.Nifti1Image(
-                item._mask.astype(np.uint8), affine=item.affine_raw)
-            mask_path = self.output_path(study_name)
-
-            logging.info(f'Saving study <{study_name}> ({mask_path})')
-            nib.save(mask_nib, mask_path)
-
 
 def main(_):
-    tf.enable_eager_execution()
-
     logging.set_verbosity(logging.INFO)
+    tf.enable_eager_execution()
 
     os.path.isdir(FLAGS.output_dir) or os.makedirs(FLAGS.output_dir)
 
